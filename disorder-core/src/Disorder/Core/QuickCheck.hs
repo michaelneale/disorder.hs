@@ -1,4 +1,4 @@
-module Disorder.QuickCheck (
+module Disorder.Core.QuickCheck (
     module X
   ) where
 
