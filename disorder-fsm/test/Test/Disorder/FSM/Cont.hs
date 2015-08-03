@@ -72,7 +72,7 @@ genCreateFile :: Gen FileTransition
 genCreateFile = do
   return $ mkTransition "create file" `goto` do
     env <- ask
-    (fp, h) <- lift . lift $ withTempFileCont (workingDirectory env) "file.txt"
+    (fp, h) <- lift $ withTempFileCont (workingDirectory env) "file.txt"
     modify $ \fs -> fs {
         fileSystemFiles = M.insert fp (File (Just h) []) (fileSystemFiles fs)
       }
@@ -83,7 +83,7 @@ genCloseFile = do
   -- is executed only if there is at least one open file in the model (and in 'RealWord')
   return $ mkTransition "close file" `goif` anyOpenFile `goto` do
     fs <- get
-    Just (fp, (File (Just h) _)) <- lift . pick $ pickOpenFile fs
+    Just (fp, (File (Just h) _)) <- liftGen $ pickOpenFile fs
     liftIO $ hClose h
     -- update the state of the model (closes the file)
     modify $ \fs' -> fs' {
@@ -96,7 +96,7 @@ genWriteFile = do
   l <- listOf (choose ('A', 'z'))
   return $ mkTransition "write line" `goif` anyOpenFile `goto` do
     fs <- get
-    Just (fp, (File (Just h) _)) <- lift . pick $ pickOpenFile fs
+    Just (fp, (File (Just h) _)) <- liftGen $ pickOpenFile fs
     liftIO $ hPutStrLn h l
     -- update the state of the model (add written line to the end of 'fileContent')
     modify $ \fs' -> fs' {
@@ -106,14 +106,11 @@ genWriteFile = do
 -- | Reads randomly chosen line from randomly chosen closed file
 genReadFile :: Gen FileTransition
 genReadFile = do
-  return $ mkTransition "read line" `goif` anyClosedFile `goto` do
+  return $ mkTransition "read line" `goif` anyClosedNonEmptyFile `goto` do
     fs <- get
-    Just (fp, (File Nothing ls)) <- lift . pick $ pickClosedFile fs
-    lift $ do
-      -- additional "precondition" check that the model file is not empty
-      -- if it is empty the transition is discarded (no failure) see 'pre'
-      pre $ ls /= []
-      (li, sl) <- pick . elements . L.zip [0..] $ ls
+    Just (fp, (File Nothing ls)) <- liftGen $ pickClosedNonEmptyFile fs
+    do
+      (li, sl) <- liftGen . elements . L.zip [0..] $ ls
       -- opens file in continuations so it will be closed at the end of "do" block
       fl <- liftIO . (`runContT`return) $ do
         h <- withFileCont fp ReadMode
@@ -130,8 +127,8 @@ genInvalidReadFile :: Gen FileTransition
 genInvalidReadFile = do
   return $ mkTransition "invalid read line" `goif` anyClosedFile `goto` do
     fs <- get
-    Just (fp, _) <- lift . pick $ pickClosedFile fs
-    h <- lift . lift $ withFileCont fp ReadMode
+    Just (fp, _) <- liftGen $ pickClosedFile fs
+    h <- lift $ withFileCont fp ReadMode
     _ <- liftIO $ hGetLine h
     return ()
 
@@ -143,14 +140,14 @@ genInvalidWriteFile = do
   l <- listOf (choose ('A', 'z'))
   return $ mkTransition "invalid write line" `goif` anyOpenFile `goto` do
     fs <- get
-    Just (_, (File (Just h) _)) <- lift . pick $ pickOpenFile fs
+    Just (_, (File (Just h) _)) <- liftGen $ pickOpenFile fs
     liftIO $ hPutStrLn h l
 
 -- | Valid transition shall never cause test failure
 prop_success_chain :: Property
 prop_success_chain = monadicCont $ do
   d <- lift $ withSystemTempDirectoryCont "prop_success_chain"
-  runFSMCont (Environment d) mkFileSystem . listOf1 . frequency $ [
+  runFSMCont (Environment d) mkFileSystem . frequency $ [
       (10, genCreateFile)
     , (1, genCloseFile)
     , (10, genWriteFile)
@@ -162,7 +159,7 @@ prop_success_chain = monadicCont $ do
 prop_failure_chain :: Property
 prop_failure_chain = expectFailure . monadicCont $ do
   d <- lift $ withSystemTempDirectoryCont "prop_successful_chain"
-  runFSMCont (Environment d) mkFileSystem . listOf1 . frequency $ [
+  runFSMCont (Environment d) mkFileSystem . frequency $ [
       (10, genCreateFile)
     , (1, genCloseFile)
     , (10, genWriteFile)
@@ -179,6 +176,14 @@ pickOpenFile = pickFile True
 pickClosedFile :: FileSystem -> Gen (Maybe (FilePath, File))
 pickClosedFile = pickFile False
 
+pickClosedNonEmptyFile :: FileSystem -> Gen (Maybe (FilePath, File))
+pickClosedNonEmptyFile (FileSystem fs) = do
+  case [ (fp, f) | (fp, f@(File Nothing (_:__))) <- M.toList fs ] of
+    [] -> return Nothing
+    rs -> Just <$> elements rs
+
+
+
 pickFile :: Bool -> FileSystem -> Gen (Maybe (FilePath, File))
 pickFile open (FileSystem fs) = do
   case [ (fp, f) | (fp, f@(File mh _)) <- M.toList fs, open == isJust mh ] of
@@ -193,6 +198,9 @@ anyClosedFile = anyFile False
 
 anyFile :: Bool -> FileSystem -> Bool
 anyFile opened = L.any ((== opened) . isJust) . fmap fileHandle . M.elems . fileSystemFiles
+
+anyClosedNonEmptyFile :: FileSystem -> Bool
+anyClosedNonEmptyFile = L.any (\(File mh ls) -> isNothing mh && ls /= []) . M.elems . fileSystemFiles
 
 
 monadicCont :: PropertyM (ContT Property IO) a -> Property

@@ -7,10 +7,8 @@ import           Data.Monoid
 import           Control.Applicative hiding (empty)
 import           Control.Monad
 import           Control.Monad.IO.Class
-import           Control.Monad.Trans.Class
 
 import           Disorder.FSM
---import           Disorder.Core.Property
 
 import           Test.QuickCheck
 import           Test.QuickCheck.Monadic
@@ -48,7 +46,7 @@ type Environment a = Stack a
 -- | Model state of the 'Stack' is just a list
 type Model a = [a]
 
-type StackTransition a = Transition (Environment a) (Model a) IO Property
+type StackTransition a = Transition (Environment a) (Model a) IO
 
 -- | Pushes random element to stack
 genPush :: Gen (StackTransition Int)
@@ -59,7 +57,6 @@ genPush = do
     liftIO $ push s a
     -- updates the model
     modify $ (a:)
-    return $ True === True
 
 -- | Broken 'push' which doesn't actually push negative elements
 genInvalidPush :: Gen (StackTransition Int)
@@ -71,7 +68,6 @@ genInvalidPush = do
     unless (a < 0) $ liftIO $ push s a
     -- | it does modify the model correctly (so it won't match the 'RealWorld')
     modify $ (a:)
-    return $ True === True
 
 -- | Pops an element from 'Stack'
 genPop :: Gen (StackTransition Int)
@@ -80,10 +76,9 @@ genPop =
     s <- ask
     a <- liftIO $ pop s
     l <- get
---    lift $ assert (a == head l)
+    unless (a == head l) (fail "a /= head l")
     -- updates the Model
     modify $ tail
-    return $ a === head l
 
 -- | Does not specify 'goif' pre-condition so the assertion can fail
 --   when it is executed with empty 'Stack'
@@ -93,12 +88,11 @@ genInvalidPop =
     s <- ask
     l <- get
     -- this may 'fail'
---    lift $ assert (not . null $ l)
+    unless (not . null $ l) $ fail "l == []"
     a <- liftIO $ pop s
     -- and this may 'fail' if the model is out of sync with 'RealWorld'
---    lift $ assert (a == head l)
+    unless (a == head l) $ fail "a /= head l"
     modify $ tail
-    return $ property (l /= []) .&&. a === head l
 
 -- | Does not specify 'goif' pre-condition so it may throw exception
 genPopException :: Gen (StackTransition Int)
@@ -108,9 +102,8 @@ genPopException =
     l <- get
     -- will throw exception on empty 'Stack'
     a <- liftIO $ pop s
---    lift $ assert (a == head l)
+    unless (a == head l) $ fail "a /= head l"
     modify $ tail
-    return $ a === head l
 
 -- | Reads an element on 'Stack' top
 genTop :: Gen (StackTransition Int)
@@ -119,10 +112,11 @@ genTop =
     s <- ask
     ma <- liftIO $ top s
     l <- get
+--    fail "Testing!"
     -- checks with model
     case (ma, l) of
-      (Just a, (x:_)) -> return $ a === x
-      (Nothing, _) -> return $ l === []
+      (Just a, (x:_)) -> unless (a == x) $ fail "a /= x"
+      (Nothing, _) -> unless (l == []) $ fail "l is not empty"
       inv -> fail $ "invalid state: " <> show inv
 
 genSize :: Gen (StackTransition Int)
@@ -131,13 +125,21 @@ genSize =
     s <- ask
     ss <- liftIO $ size s
     l <- get
-    return $ ss === length l
+    unless (ss == length l) $ fail "ss /= length l"
 
 -- | Shall never fail since only correct transitions are used
 prop_success :: Property
 prop_success = monadicIO $ do
   s <- liftIO empty
   runFSM s [] . oneof $ [genPush, genPop, genTop, genSize]
+
+
+prop_test :: Property
+prop_test = monadicIO $ do
+  s <- liftIO empty
+  runFSM s [] . oneof $ [genTop]
+
+
 
 -- | fails due to invalid 'pop'
 prop_pop_assert_error :: Property
