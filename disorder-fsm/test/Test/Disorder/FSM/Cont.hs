@@ -8,6 +8,7 @@ import           Data.Maybe
 import           Control.Applicative
 import           Control.Monad
 import           Control.Monad.Cont
+import           Control.Monad.Trans.Cont
 import           System.IO
 import           System.IO.Temp
 
@@ -112,7 +113,7 @@ genReadFile = do
     do
       (li, sl) <- liftGen . elements . L.zip [0..] $ ls
       -- opens file in continuations so it will be closed at the end of "do" block
-      fl <- liftIO . (`runContT`return) $ do
+      fl <- liftIO . evalContT $ do
         h <- withFileCont fp ReadMode
         liftIO $ do
           -- skips all lines before 'li'-st one
